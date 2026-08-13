@@ -28,7 +28,7 @@ interface IntervalsApiClient {
         @RequestBody requests: List<CreateWorkoutRequestDTO>
     )
 
-    @PostMapping("/api/v1/athlete/{athleteId}/events")
+    @PostMapping("/api/v1/athlete/{athleteId}/events?upsertOnUid=true")
     fun createEvent(
         @PathVariable athleteId: String,
         @RequestBody createEventRequestDTO: CreateEventRequestDTO
