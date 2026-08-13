@@ -35,13 +35,26 @@ class ToIntervalsWorkoutConverter {
     fun createEventRequestDTO(workout: Workout): CreateEventRequestDTO {
         val workoutString = getWorkoutString(workout)
         val description = getDescription(workout, workoutString)
+        val key = eventKey(workout)
         return CreateEventRequestDTO(
             (workout.date ?: LocalDate.now()).atStartOfDay().toString(),
             workout.details.name,
             IntervalsTrainingTypeMapper.getByTrainingType(workout.details.type),
             "WORKOUT",
-            description
+            description,
+            key,
+            key,
         )
+    }
+
+    private fun eventKey(workout: Workout): String? {
+        val d = workout.details.externalData
+        val date = (workout.date ?: LocalDate.now()).toString()
+        val source = d.trainingPeaksId?.let { "trainingPeaks:$it" }
+            ?: d.trainerRoadId?.let { "trainerRoad:$it" }
+            ?: d.intervalsId?.let { "intervals:$it" }
+            ?: return null
+        return "tp2intervals:$source:$date"
     }
 
 
