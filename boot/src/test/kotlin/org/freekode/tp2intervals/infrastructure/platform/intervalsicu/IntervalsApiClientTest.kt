@@ -3,22 +3,23 @@ package org.freekode.tp2intervals.infrastructure.platform.intervalsicu
 import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.workout.CreateEventRequestDTO
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
-import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.cloud.openfeign.support.SpringMvcContract
 
 class IntervalsApiClientTest {
 
     @Test
-    fun `createEvent posts with upsertOnUid=true so a repeated import updates instead of duplicating`() {
+    fun `createEvent's Feign request template carries upsertOnUid=true so a repeated import updates instead of duplicating`() {
         // IntervalsApiClientMock#createEvent is unimplemented and cannot observe the query
-        // string a real Feign call would send, so this reads the mapping the Feign proxy is
-        // built from directly — a test that fails if the parameter is dropped or changed.
+        // string a real Feign call would send, so this parses the mapping through the same
+        // SpringMvcContract Feign itself uses to build the request template — proving what
+        // actually reaches the request, not just that the annotation text is present.
         val method = IntervalsApiClient::class.java.getMethod(
             "createEvent",
             String::class.java,
             CreateEventRequestDTO::class.java,
         )
-        val mapping = method.getAnnotation(PostMapping::class.java)
+        val metadata = SpringMvcContract().parseAndValidateMetadata(IntervalsApiClient::class.java, method)
 
-        assertEquals("/api/v1/athlete/{athleteId}/events?upsertOnUid=true", mapping.value.single())
+        assertEquals("?upsertOnUid=true", metadata.template().queryLine())
     }
 }
