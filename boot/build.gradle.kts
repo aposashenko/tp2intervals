@@ -62,6 +62,10 @@ tasks.withType<KotlinCompile> {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    // *IT classes hit live TrainingPeaks/intervals.icu APIs and need credentials this
+    // fork's CI does not have; matches AGENTS.md's documented "./gradlew test # Run unit
+    // tests only".
+    exclude("**/*IT.class")
 }
 
 tasks.bootJar {
