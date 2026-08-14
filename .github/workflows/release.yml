@@ -12,7 +12,6 @@ jobs:
     with:
       jar-name: tp2intervals
       jar-artifact-name: tp2intervals-jar
-      dry-run: false
 
   docker-image-new:
     needs:
