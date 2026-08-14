@@ -1,5 +1,6 @@
 package org.freekode.tp2intervals.infrastructure.platform.intervalsicu.workout
 
+import org.freekode.tp2intervals.domain.TrainingType
 import org.freekode.tp2intervals.domain.librarycontainer.LibraryContainer
 import org.freekode.tp2intervals.domain.workout.Workout
 import org.freekode.tp2intervals.infrastructure.Signature
@@ -35,9 +36,10 @@ class ToIntervalsWorkoutConverter {
     fun createEventRequestDTO(workout: Workout): CreateEventRequestDTO {
         val workoutString = getWorkoutString(workout)
         val description = getDescription(workout, workoutString)
-        val key = eventKey(workout)
+        val date = workout.date ?: LocalDate.now()
+        val key = eventKey(workout, date)
         return CreateEventRequestDTO(
-            (workout.date ?: LocalDate.now()).atStartOfDay().toString(),
+            date.atStartOfDay().toString(),
             workout.details.name,
             IntervalsTrainingTypeMapper.getByTrainingType(workout.details.type),
             "WORKOUT",
@@ -47,14 +49,18 @@ class ToIntervalsWorkoutConverter {
         )
     }
 
-    private fun eventKey(workout: Workout): String? {
+    private fun eventKey(workout: Workout, date: LocalDate): String? {
         val d = workout.details.externalData
-        val date = (workout.date ?: LocalDate.now()).toString()
+        // TrainingPeaks assigns notes and workouts independent id sequences that can
+        // collide on the same numeric value; without a kind discriminator, syncing a
+        // note and a workout that happen to share a source id on the same date would
+        // silently upsert one over the other.
+        val kind = if (workout.details.type == TrainingType.NOTE) "note" else "workout"
         val source = d.trainingPeaksId?.let { "trainingPeaks:$it" }
             ?: d.trainerRoadId?.let { "trainerRoad:$it" }
             ?: d.intervalsId?.let { "intervals:$it" }
             ?: return null
-        return "tp2intervals:$source:$date"
+        return "tp2intervals:$kind:$source:$date"
     }
 
 
