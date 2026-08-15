@@ -25,11 +25,16 @@ class IntervalsWorkoutRepository(
     override fun platform() = Platform.INTERVALS
 
     override fun saveWorkoutsToCalendar(workouts: List<Workout>) {
-        workouts.forEach {
-            val toIntervalsWorkoutConverter = ToIntervalsWorkoutConverter()
-            val request = toIntervalsWorkoutConverter.createEventRequestDTO(it)
-            intervalsApiClient.createEvent(intervalsConfigurationRepository.getConfiguration().athleteId, request)
+        if (workouts.isEmpty()) {
+            // The bulk endpoint is the only one that upserts on external_id, and an
+            // empty import must stay a no-op rather than become an empty POST.
+            return
         }
+        val toIntervalsWorkoutConverter = ToIntervalsWorkoutConverter()
+        val athleteId = intervalsConfigurationRepository.getConfiguration().athleteId
+        workouts.map { toIntervalsWorkoutConverter.createEventRequestDTO(it) }
+            .chunked(maxWorkoutsToSave)
+            .forEach { intervalsApiClient.createEvents(athleteId, it) }
     }
 
     override fun saveWorkoutsToLibrary(libraryContainer: LibraryContainer, workouts: List<Workout>) {

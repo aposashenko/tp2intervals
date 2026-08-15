@@ -3,12 +3,16 @@ package org.freekode.tp2intervals.infrastructure.platform.intervalsicu.workout
 import config.TestUtils
 import config.mock.IntervalsApiClientMock
 import config.mock.ObjectMapperFactory
+import org.freekode.tp2intervals.domain.ExternalData
 import org.freekode.tp2intervals.domain.TrainingType
 import org.freekode.tp2intervals.domain.workout.Workout
+import org.freekode.tp2intervals.domain.workout.WorkoutDetails
 import org.freekode.tp2intervals.domain.workout.structure.SingleStep
 import org.freekode.tp2intervals.domain.workout.structure.StepLength
 import org.freekode.tp2intervals.domain.workout.structure.WorkoutStructure
+import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.IntervalsActivityDTO
 import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.IntervalsApiClient
+import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.activity.CreateActivityResponseDTO
 import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.configuration.IntervalsConfiguration
 import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.configuration.IntervalsConfigurationRepository
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -17,6 +21,7 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import org.springframework.util.ResourceUtils
+import org.springframework.web.multipart.MultipartFile
 import java.time.Duration
 import java.time.LocalDate
 
@@ -185,6 +190,98 @@ class IntervalsWorkoutRepositoryTest {
         assertEquals(Duration.ofMinutes(45), workout.details.duration)
         assertEquals(32, workout.details.load)
         assertEquals(null, workout.structure)
+    }
+
+    @Test
+    fun `saves a calendar copy through the bulk endpoint, carrying every workout's external_id`() {
+        // given
+        val recorder = RecordingIntervalsApiClient()
+        val repository = IntervalsWorkoutRepository(recorder, intervalsConfigurationRepository)
+
+        // when
+        repository.saveWorkoutsToCalendar(listOf(calendarWorkout("11"), calendarWorkout("22")))
+
+        // then: one request, not one per workout — the single-event endpoint cannot upsert
+        // on external_id at all, so batching is what makes the mechanism reachable.
+        assertEquals(1, recorder.calls.size)
+        assertEquals(
+            listOf(
+                "tp2intervals:workout:trainingPeaks:11:2026-08-19",
+                "tp2intervals:workout:trainingPeaks:22:2026-08-19",
+            ),
+            recorder.calls[0].map { it.external_id },
+        )
+    }
+
+    @Test
+    fun `chunks a long calendar copy into bounded bulk batches`() {
+        // given
+        val recorder = RecordingIntervalsApiClient()
+        val repository = IntervalsWorkoutRepository(recorder, intervalsConfigurationRepository)
+
+        // when
+        repository.saveWorkoutsToCalendar((1..23).map { calendarWorkout(it.toString()) })
+
+        // then
+        assertEquals(listOf(10, 10, 3), recorder.calls.map { it.size })
+        assertEquals(23, recorder.calls.flatten().size)
+    }
+
+    @Test
+    fun `sends no request at all when there is nothing to import`() {
+        // given
+        val recorder = RecordingIntervalsApiClient()
+        val repository = IntervalsWorkoutRepository(recorder, intervalsConfigurationRepository)
+
+        // when
+        repository.saveWorkoutsToCalendar(emptyList())
+
+        // then: an empty import must stay a no-op rather than POST an empty array
+        assertEquals(emptyList<List<CreateEventRequestDTO>>(), recorder.calls)
+    }
+
+    private fun calendarWorkout(trainingPeaksId: String): Workout {
+        val details = WorkoutDetails(
+            type = TrainingType.BIKE,
+            name = "workout $trainingPeaksId",
+            description = null,
+            duration = null,
+            load = null,
+            externalData = ExternalData(trainingPeaksId = trainingPeaksId, intervalsId = null, trainerRoadId = null),
+        )
+        return Workout(details, LocalDate.parse("2026-08-19"), null)
+    }
+
+    private class RecordingIntervalsApiClient : IntervalsApiClient {
+        val calls = mutableListOf<List<CreateEventRequestDTO>>()
+
+        override fun createEvents(athleteId: String, createEventRequestDTOs: List<CreateEventRequestDTO>) {
+            calls.add(createEventRequestDTOs)
+        }
+
+        override fun createWorkouts(athleteId: String, requests: List<CreateWorkoutRequestDTO>) =
+            throw UnsupportedOperationException()
+
+        override fun getEvents(
+            athleteId: String,
+            startDate: String,
+            endDate: String,
+            powerRange: Float,
+            hrRange: Float,
+            paceRange: Float,
+        ): List<IntervalsEventDTO> = throw UnsupportedOperationException()
+
+        override fun getActivities(
+            athleteId: String,
+            startDate: String,
+            endDate: String,
+        ): List<IntervalsActivityDTO> = throw UnsupportedOperationException()
+
+        override fun createActivity(
+            athleteId: String,
+            name: String,
+            file: MultipartFile,
+        ): CreateActivityResponseDTO = throw UnsupportedOperationException()
     }
 
     private fun findWorkoutWithName(name: String, workouts: List<Workout>): Workout {

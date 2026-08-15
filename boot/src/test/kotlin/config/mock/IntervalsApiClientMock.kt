@@ -23,7 +23,7 @@ class IntervalsApiClientMock(
         TODO("Not yet implemented")
     }
 
-    override fun createEvent(athleteId: String, createEventRequestDTO: CreateEventRequestDTO) {
+    override fun createEvents(athleteId: String, createEventRequestDTOs: List<CreateEventRequestDTO>) {
         TODO("Not yet implemented")
     }
 

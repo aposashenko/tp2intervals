@@ -28,10 +28,19 @@ interface IntervalsApiClient {
         @RequestBody requests: List<CreateWorkoutRequestDTO>
     )
 
-    @PostMapping("/api/v1/athlete/{athleteId}/events?upsertOnUid=true")
-    fun createEvent(
+    /**
+     * Creates calendar events, updating any event that already carries the same
+     * `external_id` instead of adding a second copy.
+     *
+     * `upsert` is offered only by the **bulk** endpoint; the single-event
+     * `POST /events` offers `upsertOnUid` and nothing else. Sending one event at
+     * a time therefore cannot be made idempotent on `external_id` at all, which
+     * is why the calendar path posts a list even for a single workout.
+     */
+    @PostMapping("/api/v1/athlete/{athleteId}/events/bulk?upsert=true")
+    fun createEvents(
         @PathVariable athleteId: String,
-        @RequestBody createEventRequestDTO: CreateEventRequestDTO
+        @RequestBody createEventRequestDTOs: List<CreateEventRequestDTO>
     )
 
     @GetMapping(
