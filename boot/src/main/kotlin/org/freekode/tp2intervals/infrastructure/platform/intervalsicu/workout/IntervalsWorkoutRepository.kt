@@ -32,9 +32,43 @@ class IntervalsWorkoutRepository(
         }
         val toIntervalsWorkoutConverter = ToIntervalsWorkoutConverter()
         val athleteId = intervalsConfigurationRepository.getConfiguration().athleteId
-        workouts.map { toIntervalsWorkoutConverter.createEventRequestDTO(it) }
-            .chunked(maxWorkoutsToSave)
-            .forEach { intervalsApiClient.createEvents(athleteId, it) }
+        val requests = workouts.map { toIntervalsWorkoutConverter.createEventRequestDTO(it) }
+        // A workout with no source id has no external_id, so it has nothing to
+        // upsert on. Asking the server to match on an absent key has no safe
+        // answer; these are created outright, as they were before this fix.
+        val (keyed, keyless) = requests.partition { it.external_id != null }
+        keyed.chunked(maxWorkoutsToSave)
+            .forEach { batch -> send(batch) { intervalsApiClient.upsertEvents(athleteId, it) } }
+        keyless.chunked(maxWorkoutsToSave)
+            .forEach { batch -> send(batch) { intervalsApiClient.createEvents(athleteId, it) } }
+    }
+
+    private fun send(
+        requests: List<CreateEventRequestDTO>,
+        post: (List<CreateEventRequestDTO>) -> List<CreateEventResponseDTO>?,
+    ) {
+        // The Feign client sets dismiss404 = true, so a 404 on this path would
+        // otherwise return normally and a calendar copy that created nothing
+        // would be reported as a success.
+        val response = post(requests)
+        if (response == null || response.size != requests.size) {
+            throw PlatformException(
+                Platform.INTERVALS,
+                "intervals.icu confirmed ${response?.size ?: 0} of ${requests.size} calendar events",
+            )
+        }
+        val sent = requests.mapNotNull { it.external_id }.toSet()
+        val echoed = response.mapNotNull { it.external_id }.toSet()
+        if (!echoed.containsAll(sent)) {
+            // The exact symptom that made the previous `uid`-based fix fail
+            // silently in production: the field is accepted on write and absent
+            // from every read, so the next import cannot match on it.
+            log.warn(
+                "intervals.icu did not return external_id for {} of {} events; " +
+                    "repeated imports of this window will duplicate",
+                sent.size - echoed.intersect(sent).size, requests.size,
+            )
+        }
     }
 
     override fun saveWorkoutsToLibrary(libraryContainer: LibraryContainer, workouts: List<Workout>) {

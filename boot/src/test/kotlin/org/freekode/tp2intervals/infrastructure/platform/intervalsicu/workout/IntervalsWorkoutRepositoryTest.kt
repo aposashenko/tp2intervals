@@ -12,10 +12,12 @@ import org.freekode.tp2intervals.domain.workout.structure.StepLength
 import org.freekode.tp2intervals.domain.workout.structure.WorkoutStructure
 import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.IntervalsActivityDTO
 import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.IntervalsApiClient
+import org.freekode.tp2intervals.infrastructure.PlatformException
 import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.activity.CreateActivityResponseDTO
 import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.configuration.IntervalsConfiguration
 import org.freekode.tp2intervals.infrastructure.platform.intervalsicu.configuration.IntervalsConfigurationRepository
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
@@ -193,7 +195,7 @@ class IntervalsWorkoutRepositoryTest {
     }
 
     @Test
-    fun `saves a calendar copy through the bulk endpoint, carrying every workout's external_id`() {
+    fun `saves a calendar copy through the upsert endpoint, carrying every workout's external_id`() {
         // given
         val recorder = RecordingIntervalsApiClient()
         val repository = IntervalsWorkoutRepository(recorder, intervalsConfigurationRepository)
@@ -203,13 +205,14 @@ class IntervalsWorkoutRepositoryTest {
 
         // then: one request, not one per workout — the single-event endpoint cannot upsert
         // on external_id at all, so batching is what makes the mechanism reachable.
-        assertEquals(1, recorder.calls.size)
+        assertEquals(1, recorder.upserts.size)
+        assertEquals(emptyList<List<CreateEventRequestDTO>>(), recorder.plainCreates)
         assertEquals(
             listOf(
                 "tp2intervals:workout:trainingPeaks:11:2026-08-19",
                 "tp2intervals:workout:trainingPeaks:22:2026-08-19",
             ),
-            recorder.calls[0].map { it.external_id },
+            recorder.upserts[0].map { it.external_id },
         )
     }
 
@@ -223,8 +226,50 @@ class IntervalsWorkoutRepositoryTest {
         repository.saveWorkoutsToCalendar((1..23).map { calendarWorkout(it.toString()) })
 
         // then
-        assertEquals(listOf(10, 10, 3), recorder.calls.map { it.size })
-        assertEquals(23, recorder.calls.flatten().size)
+        assertEquals(listOf(10, 10, 3), recorder.upserts.map { it.size })
+        assertEquals(23, recorder.upserts.flatten().size)
+    }
+
+    @Test
+    fun `creates a workout with no source id outright, never asking the server to upsert on an absent key`() {
+        // given: what a server does when told to match on a missing external_id is
+        // undefined, and one plausible answer collapses every keyless workout onto
+        // a single event — silent loss of planned workouts.
+        val recorder = RecordingIntervalsApiClient()
+        val repository = IntervalsWorkoutRepository(recorder, intervalsConfigurationRepository)
+
+        // when
+        repository.saveWorkoutsToCalendar(listOf(calendarWorkout("11"), keylessWorkout()))
+
+        // then
+        assertEquals(listOf("tp2intervals:workout:trainingPeaks:11:2026-08-19"),
+            recorder.upserts.flatten().map { it.external_id })
+        assertEquals(listOf<String?>(null), recorder.plainCreates.flatten().map { it.external_id })
+    }
+
+    @Test
+    fun `fails loudly when intervals-icu confirms fewer events than were sent`() {
+        // given: the Feign client sets dismiss404 = true, so a 404 on the bulk path
+        // would otherwise return normally and a copy that created nothing would be
+        // reported as a success.
+        val recorder = RecordingIntervalsApiClient(respondWith = { emptyList() })
+        val repository = IntervalsWorkoutRepository(recorder, intervalsConfigurationRepository)
+
+        // when / then
+        val thrown = assertThrows(PlatformException::class.java) {
+            repository.saveWorkoutsToCalendar(listOf(calendarWorkout("11")))
+        }
+        assertTrue(thrown.message!!.contains("confirmed 0 of 1"), thrown.message)
+    }
+
+    @Test
+    fun `fails loudly when the bulk call is dismissed and returns no response at all`() {
+        val recorder = RecordingIntervalsApiClient(respondWith = { null })
+        val repository = IntervalsWorkoutRepository(recorder, intervalsConfigurationRepository)
+
+        assertThrows(PlatformException::class.java) {
+            repository.saveWorkoutsToCalendar(listOf(calendarWorkout("11")))
+        }
     }
 
     @Test
@@ -237,26 +282,52 @@ class IntervalsWorkoutRepositoryTest {
         repository.saveWorkoutsToCalendar(emptyList())
 
         // then: an empty import must stay a no-op rather than POST an empty array
-        assertEquals(emptyList<List<CreateEventRequestDTO>>(), recorder.calls)
+        assertEquals(emptyList<List<CreateEventRequestDTO>>(), recorder.upserts)
+        assertEquals(emptyList<List<CreateEventRequestDTO>>(), recorder.plainCreates)
     }
 
-    private fun calendarWorkout(trainingPeaksId: String): Workout {
+    private fun calendarWorkout(trainingPeaksId: String): Workout =
+        workoutWithExternalData(
+            "workout $trainingPeaksId",
+            ExternalData(trainingPeaksId = trainingPeaksId, intervalsId = null, trainerRoadId = null),
+        )
+
+    private fun keylessWorkout(): Workout =
+        workoutWithExternalData("keyless workout", ExternalData.empty())
+
+    private fun workoutWithExternalData(name: String, externalData: ExternalData): Workout {
         val details = WorkoutDetails(
             type = TrainingType.BIKE,
-            name = "workout $trainingPeaksId",
+            name = name,
             description = null,
             duration = null,
             load = null,
-            externalData = ExternalData(trainingPeaksId = trainingPeaksId, intervalsId = null, trainerRoadId = null),
+            externalData = externalData,
         )
         return Workout(details, LocalDate.parse("2026-08-19"), null)
     }
 
-    private class RecordingIntervalsApiClient : IntervalsApiClient {
-        val calls = mutableListOf<List<CreateEventRequestDTO>>()
+    private class RecordingIntervalsApiClient(
+        private val respondWith: (List<CreateEventRequestDTO>) -> List<CreateEventResponseDTO>? =
+            { sent -> sent.map { CreateEventResponseDTO(1, it.external_id) } },
+    ) : IntervalsApiClient {
+        val upserts = mutableListOf<List<CreateEventRequestDTO>>()
+        val plainCreates = mutableListOf<List<CreateEventRequestDTO>>()
 
-        override fun createEvents(athleteId: String, createEventRequestDTOs: List<CreateEventRequestDTO>) {
-            calls.add(createEventRequestDTOs)
+        override fun upsertEvents(
+            athleteId: String,
+            createEventRequestDTOs: List<CreateEventRequestDTO>
+        ): List<CreateEventResponseDTO>? {
+            upserts.add(createEventRequestDTOs)
+            return respondWith(createEventRequestDTOs)
+        }
+
+        override fun createEvents(
+            athleteId: String,
+            createEventRequestDTOs: List<CreateEventRequestDTO>
+        ): List<CreateEventResponseDTO>? {
+            plainCreates.add(createEventRequestDTOs)
+            return respondWith(createEventRequestDTOs)
         }
 
         override fun createWorkouts(athleteId: String, requests: List<CreateWorkoutRequestDTO>) =
